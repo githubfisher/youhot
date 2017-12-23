@@ -1,0 +1,459 @@
+<?php
+
+namespace App\Jobs;
+
+use Illuminate\Bus\Queueable;
+use Illuminate\Queue\SerializesModels;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+use DB;
+use Illuminate\Support\Facades\Log;
+
+class DecodeProductsJson implements ShouldQueue
+{
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+
+    protected $dir = '/var/www/html/youhot/storage/app/';
+    protected $path;
+    protected $timestamp;
+    protected $site;
+    protected $rate = 6.9; //汇率
+    protected $tax  = 1.03; //税
+
+    /**
+     * Create a new job instance.
+     *
+     * @return void
+     */
+    public function __construct($path, $timestamp, $site)
+    {
+        $this->path = $path;
+	$this->timestamp = $timestamp;
+	$this->site = $site;
+    }
+
+    /**
+     * Execute the job.
+     *
+     * @return void
+     */
+    public function handle()
+    {
+	Log::info('handle run!');
+        $file_path = $this->dir.$this->path;
+        if (file_exists($file_path)) {
+            $file_arr = file($file_path);
+	    $this->logInfo('file can read');
+            for ($i=0;$i<count($file_arr);$i++) {
+                $ct = json_decode(substr($file_arr[$i], 0, (strlen($file_arr[$i]) - 2)), true);
+                if (is_array($ct)) {
+                   //$res = $this->dealWithProduct($ct, $i); 
+                } else {
+		   $this->logInfo('line '.$i.' can\'t decode');
+		}
+            }
+        } else {
+	    $this->logInfo('file not exist');
+	}
+
+	return true;
+    }
+/*
+    private function dealWithProduct($ct, $line)
+    {
+	if (isset($ct['sku'])) {
+	    $data['m_sku'] = $ct['sku'];
+	    $data['author'] = $this->ex_user($ct['brand']); // brand id
+	    $data['category'] = 0; // category id
+	    $data['store'] = $this->ex_store($this->site); // store id
+	    $data['tmp_img'] = addslashes(json_encode(['jurl'=>$this->site]));
+	    if (isset($ct['price']) && isset($ct['currency'])) {
+	        $data['price'] = $this->ex_price($ct['price'], $ct['currency']); // price
+  	    }
+	    if (isset($ct['original_price']) && isset($ct['currency'])) {
+                $data['presale_price'] = $this->ex_price($ct['original_price'], $ct['currency']); // price
+            }
+	    $data['title'] = $this->ex_translator($ct['title'], $map);
+	    $data['property'] = $this->find_property($ct['description'], $ct['sku']);
+	    $data['create_time'] = $data['save_time'] = $data['last_update'] = date('Y-m-d H:i:s', time());
+	    $data['rank'] = time();
+	    $data['m_url'] = $ct['url'];
+	    $data['status'] = 1;
+	    // color
+	    // size 
+	    // image
+	    // including_mfee
+	    // pdt_price
+	    // position
+	    if (isset($data['author']) && isset($data['category']) && isset($data['store']) && isset($data['price'])) {
+	        $p = DB::connection('test')->select('select id, price, title, position from product where m_sku = ?', [$ct['sku']]);
+	    	if ($p['id']) {
+		    $data['last_price'] = $p['price'];
+		    $oldprice = isset($data['presale_price']) ? $data['presale_price'] : $p['price'];
+		    $data['discount'] = $this->getDiscount($data['price'], $oldprice);
+		    if ($p['position'] == 0) {
+			$data['position_at'] = time();
+		    }
+  		    if (($p['title'] == $data['title']) && ($p['title'] > $data['price'])) {
+
+		    }
+		    $str = '';
+		    foreach ($data as $k => $v) {
+			$str .= $k . '=' . $v . ',';
+		    }
+  		    $res = DB::connection('test')->update("update product set ".rtrim($str, ',')." where m_sku = ?", [$ct['sku']]);
+        	    $data['discount_id'] = $this->ex_discount($data['discount']);
+		    $data['price_id'] = $this->ex_tag($data['price']);
+		    // es update
+		    $this->esDoc($p['id'], $data); 
+	    	} else {
+		    $oldprice = isset($data['presale_price']) ? $data['presale_price'] : 0;
+		    $data['discount'] = $this->getDiscount($data['price'], $oldprice);
+		    $data['position_at'] = time();
+		    $str = '';
+		    for ($i=0;$i<count($data);$i++) {
+			$str .= '?,';
+		    }
+		    $res = DB::connection('test')->insert('insert into product ('.implode(',', array_keys($data)).') values ('.rtrim($str, ',').')', array_values($data));
+		    $data['discount_id'] = $this->ex_discount($data['discount']);
+                    $data['price_id'] = $this->ex_tag($data['price']);
+                    // es insert
+		    $this->esDoc($res, $data, 'create');
+	      	}
+	    }
+	    return true;
+	} else {
+	    $this->logInfo('line'.$line.' isn\'t set sku');
+	}
+    }
+
+    private function ex_user($name){
+        $name = addslashes($name);
+        $name = str_replace(' ', '', $name);
+        if (empty($name)) {
+            return false;
+        }
+        $username = $name . '@data.st';
+        $one = DB::connection('test')->select("SELECT userid FROM user WHERE username = ?", [$username]);
+        if( $one ){
+            return $one;
+        }else{
+            $facepic = 'http://product-album-n.img-cn-hangzhou.aliyuncs.com/avatar/default_avatar.png';
+            $data['username'] = $username;
+            $data['usertype'] = 2;
+            $data['password'] = md5('Sjs#2016#' . '&*xc_@12');
+            $data['regtime']  = date('Y-m-d H:i:s');
+            $data['facepic']  = $facepic;
+            $data['nickname'] = $name;
+            return DB::connection('test')->insert("insert into user (".implode(',', array_keys($data)).") values (?, ?, ?, ?, ?, ?)", array_values($data));
+        }
+        return false;
+    }
+
+    private function ex_store($store)
+    {
+        $name = addslashes($store);
+        $name = str_replace(' ', '', $name);
+        $name = rtrim(rtrim($name, '.com'),'.COM');
+	$name = ltrim(ltrim($name, 'www.'), 'WWW.');
+        $id = DB::connection('test')->select("SELECT id FROM store WHERE name = ?", [$name]);
+        if ($id) {
+            return $id;
+        } else {
+            return DB::connection('test')->insert("insert into store (name, show_name) values (?, ?)", [$name, $store]);
+        }
+        return false;
+    }
+
+    private function ex_price($price, $currency)
+    {
+	$c = [
+	    'USD' => 6.9,
+   	    'HKD' => 0.9,
+   	    'GBP' => 8.8,
+  	    'EUR' => 7.7,
+   	    'JPY' => 0.062,
+   	    'KRW' => 0.0061,
+   	    'CHF' => 6.8,
+  	    'RMB' => 1,
+   	    'CAD' => 5.1,
+	    'CNY' => 1,
+	];
+	$rt = bcmul($this->rate, $this->tax, 2);
+	return ceil(bcmul($price*$c[$currency], $rt, 2));
+    }
+
+    private function ex_translator($word, $map=array()) {
+        if(!empty($word)) {
+            foreach ($map as $k => $v) {
+                $word = preg_replace('/\b'.$k.'\b/i', $v, $word);
+            }
+        }
+        return $word;
+    }
+
+    private function ex_tag($price){
+	if( $price<=500 ){
+            $tagname = '< 500';
+        }elseif( $price>500  && $price<=1000 ){
+            $tagname = '500 - 1000';
+        }elseif( $price>1000 && $price<=1500 ){
+            $tagname = '1000 - 1500';
+        }elseif( $price>1500 && $price<=2000 ){
+            $tagname = '1500 - 2000';
+        }elseif( $price>2000 && $price<=3000 ){
+            $tagname = '2000 - 3000';
+        }else{
+            $tagname = '> 3000';
+        }
+        $name = addslashes($name);
+        $name = strtoupper($name);
+        $one = DB::connection('test')->select("SELECT id FROM tags WHERE name = ?", [$name]);
+        if( $one ){
+            return $one;
+        }else{
+            return DB::connection('test')->insert("insert into tags (name) values (?)", [$name]);
+        }
+	return false;
+    }
+
+    private function ex_discount($dr){
+	if ($dr <= 0.3) {
+            $tagname = '<=3';
+        } elseif (0.3 < $dr && $dr <= 0.5) {
+            $tagname = '3-5';
+        } elseif (0.5 < $dr && $dr <= 0.7) {
+            $tagname = '5-7';
+        } else {
+            $tagname = '>=7';
+        }
+        $name = addslashes($name);
+        $name = strtoupper($name);
+        $one = DB::connection('test')->select("SELECT id FROM discount_tags WHERE name = ?", [$name]);
+        if( $one ){
+            return $one;
+        }else{
+            return DB::connection('test')->insert("insert into discount_tags (name) values (?)", [$name]);
+        }
+     	return false;
+    }
+
+    private function getDiscount($price, $oldprice, $num=2)
+    {
+        $discount = 1;
+        if ($oldprice >0) {
+            $discount = round($price/$oldprice, $num);
+        }
+        return $discount;
+    }
+
+    private function find_property($des, $number)
+    {
+        $property = array(
+            0 => array(
+                'name' => '商品编号',
+                'value' => $number,
+            ),
+        );
+        // material
+        preg_match_all('/(virgin|Virgin|VIRGIN)\s{0,2}[A-Za-z]+\s{0,2}[1-9][0-9]{0,2}%/', $des, $material);
+        preg_match_all('/(other|OTHER|Other)\s{0,2}[A-Za-z]+\s{0,2}[1-9][0-9]{0,2}%/', $des, $material1);
+        preg_match_all('/[1-9][0-9]{0,2}%\s{0,2}(virgin|Virgin|VIRGIN)\s{0,2}[A-Za-z]+/', $des, $material2);
+        preg_match_all('/[1-9][0-9]{0,2}%\s{0,2}(other|OTHER|Other)\s{0,2}[A-Za-z]+/', $des, $material3);
+        preg_match_all('/[1-9][0-9]{0,2}%\s{0,2}[A-Za-z]+/', $des, $material4);
+        preg_match_all('/[A-Za-z]+\s{0,2}[1-9][0-9]{0,2}%/', $des, $material5);
+        $material[0] = array_merge($material[0], $material1[0], $material2[0], $material3[0], $material4[0], $material5[0]);
+        $materials = array(
+            'virgin wool' => '初剪羊毛',
+            'other fibers' => '其他纤维',
+            'leather' => '真皮',
+            'suede' => '真皮',
+            'cashmere' => '羊绒',
+            'wool' => '羊毛',
+            'cotton' => '棉',
+            'elastane' => '氨纶',
+            'acrylic' => '腈纶',
+            'polyester' => '涤纶',
+            'nylon' => '尼龙',
+            'viscose' => '人造棉(粘纤)',
+            'polyamide' => '锦纶',
+            'silk' => '丝',
+            'Lycra' => '莱卡',
+            'PU' => '仿皮',
+            'linen' => '麻',
+            'fur' => '皮草',
+            'shea butter' => '乳木果油',
+            'spandex' => '氨纶（高弹纤维）',
+            'rayon' => '人造丝',
+	    'Triacetate' => '醋脂纤维',
+            'acetate' => '醋脂纤维',
+            'rhinestone' => '水钻',
+            'mohair' => '安哥拉山羊毛',
+            'alpaca' => '驼羊毛',
+            'mink' => '水貂毛',
+            'Chiffon' => '雪纺',
+            'rhinestone' => '水钻',
+            'rabbit' => '兔毛',
+            'fleece' => '抓绒',
+            'modal' => '天然纤维',
+        );
+        if (empty($material[0])) {
+                $material = $this->findKey($des, $materials);
+        } else {
+            $keys = array_keys($materials);
+            $material = array_unique($material[0]);
+            foreach ($material as $k => $v) {
+                foreach ($keys as $m => $n) {
+                    $pos = stripos($v, $n);
+                    if ($pos || ($pos === 0)) {
+                        $string = str_ireplace($n, $materials[$n], $v);
+                        $material[$k] = $string;
+                        break;
+                    } else {
+                        unset($material[$k]);
+                    }
+                }
+            }
+            $material = implode(',', $material);
+        }
+        if (!empty($material)) {
+            $property[] = array(
+                    'name' => '材质',
+                    'value' => $material,
+            );
+        }
+        // Width,Height,depth, mL
+	preg_match_all('/[A-Za-z]{2,10} [1-9][0-9]{0,3}.[0-9]{0,2}\s{0,2}cm/', $des, $specs);
+        preg_match_all('/[A-Za-z]{2,10}\s{0,2}[1-9][0-9]{0,3}.{0,1}[0-9]{0,2}("|inch|in)/', $des, $specs1);
+        preg_match_all('/[1-9][0-9]{0,3}.{0,1}[0-9]{0,2}("|inch|in)\s{0,2}[A-Za-z]{1,10}/', $des, $specs2);
+        preg_match_all('/[1-9][0-9]{0,3}.{0,1}[0-9]{0,2}("|inch|in)\s{0,2}[A-Za-z]{1,10}/', $des, $specs3);
+        preg_match_all('/[1-9][0-9]{0,3}.{0.1}[0-9]{0,2} m(l|L)/', $des, $specs4);
+        preg_match_all('/[1-9][0-9]{0,3}.{0,1}[0-9]{0,2}(oz.|fl. oz.)/', $des, $specs5);
+        preg_match_all('/Lens measures approx\s{0,2}[1-9][0-9]{0,3}.{0,1}[0-9]{0,2}(mm|"|in|inch)/', $des, $specs6);
+        preg_match_all('/Bridge measures approx\s{0,2}[1-9][0-9]{0,3}.{0,1}[0-9]{0,2}(mm|"|in|inch)/', $des, $specs7);
+        preg_match_all('/Arm measures approx\s{0,2}[1-9][0-9]{0,3}.{0,1}[0-9]{0,2}(mm|"|in|inch)/', $des, $specs8);
+        preg_match_all('/Frame\s{0,2}[A-Za-z]+\s{0,2}[1-9][0-9]{0,3}.{0,1}[0-9]{0,2}(mm|"|in|inch)/', $des, $specs9);
+        preg_match_all('/Arm\s{0,2}[A-Za-z]+\s{0,2}[1-9][0-9]{0,3}.{0,1}[0-9]{0,2}(mm|"|in|inch)/', $des, $specs10);
+        preg_match_all('/Bridge\s{0,2}[A-Za-z]+\s{0,2}[1-9][0-9]{0,3}.{0,1}[0-9]{0,2}(mm|"|in|inch)/', $des, $specs11);
+        preg_match_all('/Lens\s{0,2}[A-Za-z]+\s{0,2}[1-9][0-9]{0,3}.{0,1}[0-9]{0,2}(mm|"|in|inch)/', $des, $specs12);
+        $specs[0] = array_merge($specs[0], $specs1[0], $specs2[0], $specs3[0], $specs4[0], $specs5[0], $specs6[0], $specs7[0], $specs8[0]);
+        $specs[0] = array_merge($specs[0], $specs9[0], $specs10[0], $specs11[0], $specs12[0]);
+        if (!empty($specs[0])) {
+            $specs = array_unique($specs[0]);
+            $spec = array(
+                'Lens measures approx' => '镜片宽约',
+                'Bridge measures approx' => '鼻梁宽约',
+                'Arm measures approx' => '镜腿长约',
+                'Brim measures approx' => '镜面宽约',
+                'Lens Width' => '镜片宽',
+                'Bridge Width' => '鼻梁宽',
+                'Arm length' => '镜腿长',
+                'Temple length' => '镜腿长',
+                'Frame Width' => '镜框宽',
+                'Frame Height' => '镜框高',
+                'Frame Length' => '镜框长',
+                'Lens' => '镜片',
+                'Bridge' => '鼻梁',
+                'Arm' => '镜腿',
+                'Temple' => '镜腿',
+                'Frame' => '镜框',
+                'length' => '长',
+                'width' => '宽',
+                'Height' => '高',
+                'depth' => '深',
+                'ml' => '毫升',
+		'oz' => '盎司',
+                'fl.oz' => '液量盎司',
+                'inch' => '英寸',
+                '"' => '英寸',
+                'in' => '英寸',
+                'H' => '高',
+                'W' => '宽',
+                'D' => '深',
+                'L' => '长',
+            );
+            $keys = array_keys($spec);
+            foreach ($specs as $k => $v) {
+                foreach ($keys as $m => $n) {
+                    $pos = stripos($v, $n);
+                    if ($pos || ($pos === 0)) {
+                        $v = str_ireplace($n, $spec[$n], $v);
+                        break;
+                    }
+                }
+                $specs[$k] = $v;
+            }
+            $specs = implode(',', $specs);
+            if (!empty($specs)){
+                $property[] = array(
+                    'name' => '规格',
+                    'value' => str_ireplace('"', '英寸', $specs),
+                );
+            }
+        }
+        // feature
+        $mapping = array(
+            'Dyed' => '扎染/染色',
+            'Print' => '印花',
+            'Embroider' => '绣花/刺绣',
+            'Regular Fit' => '标准版型',
+            'Loose Fit' => '宽松版型',
+            'Tight Fit' => '紧身版型',
+            'Skinny Fit' => '贴身版型',
+            'Lace' => '蕾丝',
+	    'Woven' => '梭织',
+        );
+        $feature = $this->findKey($des, $mapping);
+        if (!empty($feature)){
+            $property[] = array(
+                'name' => '特性',
+                'value' => $feature,
+            );
+        }
+
+        $property = json_encode($property);
+        $property = addslashes($property);
+
+        return $property;
+    }
+
+    private function esDoc($id, $data, $type='update')
+    {
+        $create_data = array(
+            'type' => $type,
+            'condition' => $id,
+            'data' => $data
+        );
+        $this->curl_es($create_data);
+    }
+
+    private function curl_es($data, $url = 'api/coru')
+    {
+        if (isset($data['data']['create_time'])) {
+            $data['data']['create_time'] = time();
+        }
+        $data = array('data' => $data);
+        $data = json_encode($data);
+        $url = 'http://10.26.95.72/index.php/'.$url;
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_POST, 1);
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, array(
+            'Content-Type: application/json; charset=utf-8',
+            'Content-Length:'.strlen($data)
+        ));
+	curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        $result = curl_exec($ch);
+        curl_close($ch);
+    }
+*/
+    /*private function logInfo($info)
+    {
+	return DB::connection('test')->insert('insert into json_file (path, info, created_at) values (?, ?)', [$this->path, $info, time()]);	
+    }*/
+
+}
